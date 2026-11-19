@@ -5,6 +5,7 @@
  *   单击       -> 拍照（JPEG 存 /storage/photo_XXX.jpg）
  *   双击       -> 预览照片（每次切下一张，JPEG 解码显示在屏幕上）
  *   三击       -> 回放下一段录音（WAV）
+ *   四击       -> 删除全部照片（录音保留）
  *   长按(>1.2s)-> 开始/停止录音
  *
  * 也可通过 USB 串口输入命令：photo / rec / play / ls / status / vol
@@ -363,7 +364,7 @@ static void display_task(void*) {
         snprintf(line0, sizeof(line0), "%s", msg);
         snprintf(line1, sizeof(line1), "照片:%d  录音:%d", photos, recs);
         snprintf(line2, sizeof(line2), "单击:拍照 双击:看图");
-        snprintf(line3, sizeof(line3), "长按:录音 三击:播放");
+        snprintf(line3, sizeof(line3), "长按:录音 三击:播放 四击:删照");
 
         const char* lines[4] = {line0, line1, line2, line3};
         display_update("小智AI-BotHub", lines, 4);
@@ -379,7 +380,7 @@ static void button_task(void*) {
     bool long_fired = false;
     uint32_t press_start = 0;
     uint32_t last_click_end = 0;
-    int click_count = 0;   /* 连续短按次数：1=单击 2=双击 3=三击 */
+    int click_count = 0;   /* 连续短按次数：1=单击 2=双击 3=三击 4=删照片 */
 
     while (true) {
         bool level = gpio_get_level(BOOT_BUTTON_GPIO);
@@ -423,7 +424,7 @@ static void button_task(void*) {
                 }
             }
         }
-        // 静默 350ms 后统一判定单击/双击/三击
+        // 静默 350ms 后统一判定单击/双击/三击/四击
         if (click_count > 0 && last && (now - last_click_end) > 350) {
             int clicks = click_count;
             click_count = 0;
@@ -444,8 +445,25 @@ static void button_task(void*) {
                 xTaskCreate(photo_task, "photo", 6144, nullptr, 3, nullptr);
             } else if (clicks == 2) {
                 xTaskCreate(photo_preview_task, "preview", 8192, nullptr, 3, nullptr);
-            } else {
+            } else if (clicks == 3) {
                 xTaskCreate(playback_task, "playback", 6144, nullptr, 3, nullptr);
+            } else {
+                /* 四击：删除全部照片（录音保留）。删除是轻量操作，
+                 * 但文件数组必须 static —— button 任务栈仅 4096B。 */
+                static char files[64][64];
+                int n = storage_list("/storage", ".jpg", files, 64);
+                int removed = 0;
+                for (int i = 0; i < n; i++) {
+                    if (storage_remove(files[i]) == ESP_OK) removed++;
+                }
+                LOCK_STATE();
+                g_state.photo_count = 0;
+                g_state.preview_index = 0;
+                UNLOCK_STATE();
+                char msg[96];
+                snprintf(msg, sizeof(msg), "已删除 %d 张照片", removed);
+                set_message(msg);
+                ESP_LOGI(TAG, "quad-click: removed %d/%d jpg", removed, n);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -584,5 +602,5 @@ extern "C" void app_main(void) {
     xTaskCreate(button_task, "button", 4096, nullptr, 3, nullptr);
     xTaskCreate(cli_task, "cli", 4096, nullptr, 2, nullptr);
 
-    ESP_LOGI(TAG, "Ready. BOOT: tap=photo, double=preview, triple=play, hold=record");
+    ESP_LOGI(TAG, "Ready. BOOT: tap=photo, double=preview, triple=play, quad=rmphotos, hold=record");
 }
