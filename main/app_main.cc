@@ -409,7 +409,7 @@ static void button_task(void*) {
 static void cli_task(void*) {
     char line[64];
     int idx = 0;
-    ESP_LOGI(TAG, "CLI ready: photo | preview | rec | play | ls | status | rmphotos | vol<pct>");
+    ESP_LOGI(TAG, "CLI ready: photo | preview | rec | play | ls | status | rmphotos | dump <file> | vol<pct>");
     while (true) {
         int c = getchar();
         if (c < 0) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
@@ -449,6 +449,31 @@ static void cli_task(void*) {
                     g_state.preview_index = 0;
                     UNLOCK_STATE();
                     ESP_LOGI(TAG, "rmphotos: removed %d/%d jpg (wav kept)", removed, n);
+                } else if (strncmp(line, "dump ", 5) == 0) {
+                    /* 导出文件：以 base64 输出到串口（配合 PC 端脚本接收） */
+                    const char* path = line + 5;
+                    uint8_t* data = nullptr;
+                    int len = storage_read(path, &data);
+                    if (len < 0) {
+                        ESP_LOGE(TAG, "dump: read failed %s", path);
+                    } else {
+                        static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                        ESP_LOGI(TAG, "dump: %s len=%d BEGIN", path, len);
+                        for (int i = 0; i < len; i += 3) {
+                            int a = data[i];
+                            int b = (i + 1 < len) ? data[i + 1] : 0;
+                            int c = (i + 2 < len) ? data[i + 2] : 0;
+                            char e[4] = {T[a >> 2], T[((a & 3) << 4) | (b >> 4)],
+                                         T[((b & 15) << 2) | (c >> 6)], T[c & 63]};
+                            if (i + 1 >= len) { e[2] = '='; }
+                            if (i + 2 >= len) { e[3] = '='; }
+                            printf("%c%c%c%c", e[0], e[1], e[2], e[3]);
+                            if (((i / 3) + 1) % 50 == 0) printf("\n");
+                        }
+                        printf("\n");
+                        ESP_LOGI(TAG, "dump: END");
+                        free(data);
+                    }
                 } else if (strncmp(line, "vol", 3) == 0) {
                     int v = atoi(line + 3);
                     audio_set_volume(v);
