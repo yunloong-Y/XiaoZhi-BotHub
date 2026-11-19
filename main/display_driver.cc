@@ -7,7 +7,7 @@
 #include "bothub.h"
 #include "board_config.h"
 #include "board_io.h"
-#include "font5x7.h"
+#include "cn_font.h"
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
@@ -52,28 +52,59 @@ static void fill_rect(int x, int y, int w, int h, uint16_t color) {
     }
 }
 
-static void draw_char(int x, int y, char c, int scale, uint16_t color) {
-    int idx = (int)(unsigned char)c - 0x20;
-    if (idx < 0 || idx >= 95) return;
-    const uint8_t* glyph = font5x7_bits[idx];
-    for (int row = 0; row < 7; row++) {
-        for (int col = 0; col < 5; col++) {
-            if (glyph[row] & (1 << col)) {
+/* 查字库（线性查找，151 个字足够快） */
+static const cn_glyph_t* find_glyph(uint16_t unicode) {
+    for (int i = 0; i < CN_FONT_COUNT; i++) {
+        if (cn_font[i].unicode == unicode) return &cn_font[i];
+    }
+    return nullptr;
+}
+
+/* 解码一个 UTF-8 字符，返回字节数；unicode 为 BMP 码点 */
+static int utf8_decode(const char* s, uint16_t* uni) {
+    const uint8_t* p = (const uint8_t*)s;
+    uint8_t c = p[0];
+    if (c < 0x80) { *uni = c; return 1; }
+    if ((c & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
+        *uni = ((c & 0x1F) << 6) | (p[1] & 0x3F); return 2;
+    }
+    if ((c & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+        *uni = ((c & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); return 3;
+    }
+    *uni = '?';
+    return 1;
+}
+
+/* 画单个 16x16 字形（scale 倍放大） */
+static void draw_glyph(int x, int y, const cn_glyph_t* g, int scale, uint16_t color) {
+    for (int row = 0; row < CN_FONT_SIZE; row++) {
+        uint16_t bits = g->rows[row];
+        for (int col = 0; col < CN_FONT_SIZE; col++) {
+            if (bits & (1 << (CN_FONT_SIZE - 1 - col))) {
                 fill_rect(x + col * scale, y + row * scale, scale, scale, color);
             }
         }
     }
 }
 
+/* UTF-8 文本绘制，等宽 16*scale 步进；未收录字符画方框占位 */
 static void draw_text(int x, int y, const char* text, int scale, uint16_t color) {
     int cx = x;
+    int step = CN_FONT_SIZE * scale;
     while (*text) {
         if (*text == '\n') break;
-        if (cx + 6 * scale <= DISPLAY_WIDTH) {
-            draw_char(cx, y, *text, scale, color);
+        uint16_t uni = 0;
+        int n = utf8_decode(text, &uni);
+        if (cx + step <= DISPLAY_WIDTH) {
+            const cn_glyph_t* g = find_glyph(uni);
+            if (g) {
+                draw_glyph(cx, y, g, scale, color);
+            } else {
+                fill_rect(cx, y, step, step, color);  /* 缺字占位 */
+            }
         }
-        cx += 6 * scale;
-        text++;
+        cx += step;
+        text += n;
     }
 }
 
@@ -173,16 +204,16 @@ esp_err_t display_init(void) {
 void display_update(const char* title, const char* const* lines, int line_count) {
     if (!panel || !s_fb) return;
 
-    /* 1) 全部在内存里绘制 */
+    /* 1) 全部在内存里绘制（16x16 点阵，标题与正文均为 scale=1） */
     fill_rect(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, COLOR_BG);
-    draw_text(8, 8, title, 3, COLOR_TITLE);
-    fill_rect(0, 40, DISPLAY_WIDTH, 2, COLOR_TITLE);
+    draw_text(8, 6, title, 1, COLOR_TITLE);
+    fill_rect(0, 26, DISPLAY_WIDTH, 2, COLOR_TITLE);
 
-    int y = 56;
+    int y = 36;
     const int max_lines = 8;
     for (int i = 0; i < line_count && i < max_lines; i++) {
-        draw_text(8, y, lines[i], 2, (i == 0) ? COLOR_HL : COLOR_FG);
-        y += 22;
+        draw_text(8, y, lines[i], 1, (i == 0) ? COLOR_HL : COLOR_FG);
+        y += 26;
     }
 
     /* 2) 一次 SPI 事务刷整帧，杜绝撕裂/闪烁 */

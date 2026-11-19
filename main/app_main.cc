@@ -49,10 +49,10 @@ static void set_mode(WorkMode m) {
 
 /* ---------- 拍照任务 ---------- */
 static void photo_task(void*) {
-    if (g_busy) { set_message("BUSY"); vTaskDelete(nullptr); return; }
+    if (g_busy) { set_message("忙..."); vTaskDelete(nullptr); return; }
     g_busy = true;
     set_mode(MODE_PHOTO);
-    set_message("TAKING PHOTO");
+    set_message("正在拍照");
 
     uint8_t* jpg = nullptr;
     size_t len = 0;
@@ -64,14 +64,14 @@ static void photo_task(void*) {
         snprintf(path, sizeof(path), "/storage/photo_%03d.jpg", idx);
         if (storage_save(path, jpg, len) == ESP_OK) {
             LOCK_STATE(); g_state.photo_count++; UNLOCK_STATE();
-            char msg[96]; snprintf(msg, sizeof(msg), "SAVED photo_%03d.jpg", idx);
+            char msg[96]; snprintf(msg, sizeof(msg), "已存 photo_%03d.jpg", idx);
             set_message(msg);
         } else {
-            set_message("SAVE FAIL");
+            set_message("保存失败");
         }
         free(jpg);
     } else {
-        set_message("CAPTURE FAIL");
+        set_message("拍照失败");
     }
 
     g_busy = false;
@@ -81,11 +81,11 @@ static void photo_task(void*) {
 
 /* ---------- 录音任务 ---------- */
 static void record_task(void*) {
-    if (g_busy) { set_message("BUSY"); vTaskDelete(nullptr); return; }
+    if (g_busy) { set_message("忙..."); vTaskDelete(nullptr); return; }
     g_busy = true;
     g_record_stop = false;
     set_mode(MODE_RECORDING);
-    set_message("RECORDING...");
+    set_message("录音中...");
 
     int idx;
     LOCK_STATE(); idx = g_state.record_count; UNLOCK_STATE();
@@ -94,7 +94,7 @@ static void record_task(void*) {
 
     FILE* f = fopen(path, "wb");
     if (!f) {
-        set_message("OPEN FAIL");
+        set_message("打开失败");
         g_busy = false; set_mode(MODE_IDLE); vTaskDelete(nullptr); return;
     }
     // 先写占位 WAV 头，结束时回填
@@ -105,7 +105,7 @@ static void record_task(void*) {
     if (audio_record_start() != ESP_OK) {
         fclose(f);
         remove(path);
-        set_message("MIC FAIL");
+        set_message("麦克风失败");
         g_busy = false; set_mode(MODE_IDLE); vTaskDelete(nullptr); return;
     }
 
@@ -120,7 +120,7 @@ static void record_task(void*) {
         // 每 5 秒刷新一次显示，提示录音时长
         if (++tick % (AUDIO_SAMPLE_RATE / 512 * 5) == 0) {
             char msg[96];
-            snprintf(msg, sizeof(msg), "REC %u s", (unsigned)(total_bytes / (AUDIO_SAMPLE_RATE * 2)));
+            snprintf(msg, sizeof(msg), "录音 %u 秒", (unsigned)(total_bytes / (AUDIO_SAMPLE_RATE * 2)));
             set_message(msg);
         }
     }
@@ -135,11 +135,11 @@ static void record_task(void*) {
     if (total_bytes > 44) {
         LOCK_STATE(); g_state.record_count++; UNLOCK_STATE();
         char msg[96];
-        snprintf(msg, sizeof(msg), "SAVED rec_%03d.wav", idx);
+        snprintf(msg, sizeof(msg), "已存 rec_%03d.wav", idx);
         set_message(msg);
     } else {
         remove(path);
-        set_message("EMPTY REC");
+        set_message("录音为空");
     }
     g_busy = false;
     set_mode(MODE_IDLE);
@@ -148,14 +148,14 @@ static void record_task(void*) {
 
 /* ---------- 回放任务 ---------- */
 static void playback_task(void*) {
-    if (g_busy) { set_message("BUSY"); vTaskDelete(nullptr); return; }
+    if (g_busy) { set_message("忙..."); vTaskDelete(nullptr); return; }
     g_busy = true;
     set_mode(MODE_PLAYBACK);
 
     char files[32][64];
     int count = storage_list("/storage", ".wav", files, 32);
     if (count == 0) {
-        set_message("NO RECORDING");
+        set_message("没有录音");
         g_busy = false; set_mode(MODE_IDLE); vTaskDelete(nullptr); return;
     }
 
@@ -166,7 +166,7 @@ static void playback_task(void*) {
     uint8_t* wav = nullptr;
     int wav_len = storage_read(path, &wav);
     if (wav_len <= 0) {
-        set_message("READ FAIL");
+        set_message("读取失败");
         g_busy = false; set_mode(MODE_IDLE); vTaskDelete(nullptr); return;
     }
 
@@ -174,7 +174,7 @@ static void playback_task(void*) {
     size_t data_off = 0, data_size = 0;
     bool ok = wav_parse_header(wav, wav_len, &hdr, &data_off, &data_size);
     if (!ok) {
-        set_message("BAD WAV");
+        set_message("格式错误");
         free(wav);
         g_busy = false; set_mode(MODE_IDLE); vTaskDelete(nullptr); return;
     }
@@ -184,7 +184,7 @@ static void playback_task(void*) {
     strncpy(base, slash ? slash + 1 : path, sizeof(base) - 1);
     base[sizeof(base) - 1] = '\0';
     char msg[96];
-    snprintf(msg, sizeof(msg), "PLAY %s", base);
+    snprintf(msg, sizeof(msg), "播放 %s", base);
     set_message(msg);
 
     audio_play_start(hdr.sample_rate);
@@ -202,7 +202,7 @@ static void playback_task(void*) {
     free(wav);
 
     LOCK_STATE(); g_state.playback_index = (idx + 1) % count; UNLOCK_STATE();
-    set_message("PLAY DONE");
+    set_message("播放完成");
     g_busy = false;
     set_mode(MODE_IDLE);
     vTaskDelete(nullptr);
@@ -221,13 +221,13 @@ static void display_task(void*) {
         UNLOCK_STATE();
 
         snprintf(line0, sizeof(line0), "%s", msg);
-        snprintf(line1, sizeof(line1), "PHOTO:%d  REC:%d", photos, recs);
-        snprintf(line2, sizeof(line2), "TAP:PHOTO HOLD:REC");
-        snprintf(line3, sizeof(line3), "DBL:PLAY  STORAGE:%uK",
+        snprintf(line1, sizeof(line1), "照片:%d  录音:%d", photos, recs);
+        snprintf(line2, sizeof(line2), "单击:拍照  长按:录音");
+        snprintf(line3, sizeof(line3), "双击:回放  已用:%uK",
                  (unsigned)(storage_used_bytes() / 1024));
 
         const char* lines[4] = {line0, line1, line2, line3};
-        display_update("XIAOZHI BOTHUB", lines, 4);
+        display_update("小智AI-BotHub", lines, 4);
         vTaskDelay(pdMS_TO_TICKS(400));
     }
 }
@@ -281,7 +281,7 @@ static void button_task(void*) {
                 UNLOCK_STATE();
                 if (recording) {
                     g_record_stop = true;
-                    set_message("STOPPING REC");
+                    set_message("停止录音");
                 } else if (!g_busy) {
                     xTaskCreate(record_task, "record", 6144, nullptr, 3, nullptr);
                 }
@@ -369,7 +369,7 @@ extern "C" void app_main(void) {
     };
     ESP_ERROR_CHECK(gpio_config(&btn));
 
-    set_message("READY");
+    set_message("就绪");
     set_mode(MODE_IDLE);
 
     xTaskCreate(display_task, "display", 4096, nullptr, 2, nullptr);
