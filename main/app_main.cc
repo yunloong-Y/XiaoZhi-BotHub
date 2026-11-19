@@ -165,9 +165,11 @@ static void photo_preview_task(void*) {
     set_mode(MODE_PLAYBACK);
     LOCK_STATE(); g_state.previewing = true; UNLOCK_STATE();
 
-    /* 解码缓冲常驻 PSRAM，切换照片时复用 */
+    /* 解码缓冲常驻 PSRAM，切换照片时复用。
+     * 尺寸按 VGA 640x480x2 分配（esp_jpeg 要求 outbuf 按 1:1 输出分配），
+     * VGA 照片用 1/2 缩放解码出 320x240 满屏，旧 QVGA 照片 1:1 解码也放得下。 */
     uint16_t* rgb = (uint16_t*)heap_caps_malloc(
-        (size_t)DISPLAY_WIDTH * DISPLAY_HEIGHT * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        (size_t)640 * 480 * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!rgb) {
         set_message("内存不足");
         LOCK_STATE(); g_state.previewing = false; UNLOCK_STATE();
@@ -192,7 +194,20 @@ static void photo_preview_task(void*) {
             int jpg_len = storage_read(files[idx], &jpg);
             bool ok = false;
             if (jpg_len > 0 && jpg) {
-                ok = jpg2rgb565(jpg, (size_t)jpg_len, (uint8_t*)rgb, JPEG_IMAGE_SCALE_0);
+                /* 自动按图片高度选缩放：VGA(640x480) 用 1/2 缩放输出 320x240 满屏，
+                 * QVGA(320x240) 及以下 1:1 直接满屏。从 SOF0(FFC0) 读高度。 */
+                esp_jpeg_image_scale_t scale = JPEG_IMAGE_SCALE_0;
+                const uint8_t* p = jpg;
+                const uint8_t* pe = jpg + (jpg_len > 4096 ? 4096 : jpg_len);
+                while (p + 9 < pe) {
+                    if (p[0] == 0xFF && p[1] == 0xC0) {
+                        int h = (p[5] << 8) | p[6];
+                        if (h > 240) scale = JPEG_IMAGE_SCALE_1_2;
+                        break;
+                    }
+                    p++;
+                }
+                ok = jpg2rgb565(jpg, (size_t)jpg_len, (uint8_t*)rgb, scale);
                 free(jpg);
             }
             ESP_LOGI(TAG, "preview: %s len=%d decode=%s", files[idx], jpg_len, ok ? "OK" : "FAIL");

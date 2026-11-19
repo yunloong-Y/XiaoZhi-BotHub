@@ -44,7 +44,7 @@ esp_err_t camera_init(void) {
     config.pin_reset = CAMERA_PIN_RESET;
     config.xclk_freq_hz = CAMERA_XCLK_FREQ_HZ;
     config.pixel_format = PIXFORMAT_RGB565;  /* GC0308 无硬件 JPEG，采集后软件编码 */
-    config.frame_size = FRAMESIZE_QVGA;   /* 320x240 */
+    config.frame_size = FRAMESIZE_VGA;    /* 640x480，GC0308 物理上限（1080p 超出传感器能力） */
     config.jpeg_quality = 90;             /* 传感器硬件 JPEG 用（本板 RGB565 输出，实际由 frame2jpg 控制） */
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
