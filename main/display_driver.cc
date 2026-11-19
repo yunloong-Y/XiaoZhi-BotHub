@@ -1,6 +1,8 @@
 /*
- * 显示驱动 — ST7789 240x320，直接用 esp_lcd 绘制，无 LVGL 依赖
- * 文本用内置 5x7 点阵放大显示，行缓冲写屏。
+ * 显示驱动 — ST7789 320x240，直接用 esp_lcd 绘制，无 LVGL 依赖
+ *
+ * 关键：先在 PSRAM 里画好整帧 framebuffer，再一次 draw_bitmap 刷屏。
+ * 逐行/逐点调用 draw_bitmap 会产生数千次 SPI 事务，导致严重帧撕裂/花屏闪烁。
  */
 #include "bothub.h"
 #include "board_config.h"
@@ -8,6 +10,7 @@
 #include "font5x7.h"
 
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_ops.h>
@@ -20,18 +23,32 @@ static const char* TAG = "display";
 
 static esp_lcd_panel_handle_t panel = nullptr;
 static esp_lcd_panel_io_handle_t panel_io = nullptr;
+static uint16_t* s_fb = nullptr;   /* 整帧 RGB565 framebuffer（PSRAM） */
 
-/* RGB565 */
-#define COLOR_BG     0x0001u  /* 近黑 */
-#define COLOR_FG     0xFFFFu  /* 白 */
-#define COLOR_TITLE  0x07E0u  /* 绿 */
-#define COLOR_HL     0xF800u  /* 红 */
+/*
+ * 面板已设置 invert_color(true)，发送到屏幕的颜色会被硬件取反。
+ * 因此这里写入的色值 = 期望显示色的按位取反，最终显示才是预期颜色。
+ * 期望：背景近黑、正文白、标题绿、首行红。
+ */
+#define INV(c)          ((uint16_t)(~(c)))
+#define COLOR_BG        INV(0x0001u)   /* -> 近黑 */
+#define COLOR_FG        INV(0xFFFFu)   /* -> 白 */
+#define COLOR_TITLE     INV(0x07E0u)   /* -> 绿 */
+#define COLOR_HL        INV(0xF800u)   /* -> 红 */
 
 static void fill_rect(int x, int y, int w, int h, uint16_t color) {
-    static uint16_t line[DISPLAY_WIDTH];
-    for (int i = 0; i < w; i++) line[i] = color;
+    if (!s_fb) return;
+    /* 裁剪到屏幕范围，防止越界写 PSRAM */
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x >= DISPLAY_WIDTH  || y >= DISPLAY_HEIGHT) return;
+    if (x + w > DISPLAY_WIDTH)  w = DISPLAY_WIDTH  - x;
+    if (y + h > DISPLAY_HEIGHT) h = DISPLAY_HEIGHT - y;
+    if (w <= 0 || h <= 0) return;
+
     for (int j = 0; j < h; j++) {
-        esp_lcd_panel_draw_bitmap(panel, x, y + j, x + w, y + j + 1, line);
+        uint16_t* dst = s_fb + (size_t)(y + j) * DISPLAY_WIDTH + x;
+        for (int i = 0; i < w; i++) dst[i] = color;   /* 纯内存写，无 SPI */
     }
 }
 
@@ -51,14 +68,16 @@ static void draw_char(int x, int y, char c, int scale, uint16_t color) {
 static void draw_text(int x, int y, const char* text, int scale, uint16_t color) {
     int cx = x;
     while (*text) {
-        if (*text == '\n') { break; }
-        draw_char(cx, y, *text, scale, color);
+        if (*text == '\n') break;
+        if (cx + 6 * scale <= DISPLAY_WIDTH) {
+            draw_char(cx, y, *text, scale, color);
+        }
         cx += 6 * scale;
         text++;
     }
 }
 
-/* 背光：原厂用 LEDC + output_invert（低电平点亮 PWM），频率 25kHz 防电感啸叫 */
+/* 背光：LEDC + output_invert（低电平点亮 PWM），25kHz 防电感啸叫 */
 static void backlight_init(void) {
     ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -88,8 +107,22 @@ static void backlight_init(void) {
 }
 
 esp_err_t display_init(void) {
-    // 屏幕复位脚挂在 PCA9557 Bit0，需先初始化 IO 扩展
+    /* 屏幕复位脚挂在 PCA9557 Bit0，需先初始化 IO 扩展 */
     ESP_ERROR_CHECK(board_io_init());
+
+    /* 整帧 framebuffer：优先 PSRAM，回退内部 RAM */
+    size_t fb_size = (size_t)DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
+    bool fb_in_psram = true;
+    s_fb = (uint16_t*)heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_fb) {
+        fb_in_psram = false;
+        s_fb = (uint16_t*)heap_caps_malloc(fb_size, MALLOC_CAP_8BIT);
+    }
+    if (!s_fb) {
+        ESP_LOGE(TAG, "framebuffer alloc failed (%u bytes)", (unsigned)fb_size);
+        return ESP_ERR_NO_MEM;
+    }
+    memset(s_fb, 0, fb_size);
 
     spi_bus_config_t buscfg = {
         .mosi_io_num = LCD_PIN_MOSI,
@@ -97,7 +130,7 @@ esp_err_t display_init(void) {
         .sclk_io_num = LCD_PIN_SCLK,
         .quadwp_io_num = GPIO_NUM_NC,
         .quadhd_io_num = GPIO_NUM_NC,
-        .max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t),
+        .max_transfer_sz = (int)fb_size,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
@@ -119,7 +152,7 @@ esp_err_t display_init(void) {
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_cfg, &panel));
 
     esp_lcd_panel_reset(panel);
-    // 关键：放开 PCA9557 上的 LCD 复位（低电平=正常工作），原厂在此处 SetOutputState(0, 0)
+    /* 放开 PCA9557 上的 LCD 复位（低电平=正常工作），原厂 SetOutputState(0, 0) */
     ESP_ERROR_CHECK(board_io_set_output(PCA9557_LCD_RST_BIT, 0));
 
     esp_lcd_panel_init(panel);
@@ -131,12 +164,16 @@ esp_err_t display_init(void) {
     backlight_init();
 
     fill_rect(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, COLOR_BG);
-    ESP_LOGI(TAG, "ST7789 display initialized (backlight %d%% via PCA9557+LEDC)", LCD_BACKLIGHT_DUTY_PCT);
+    esp_lcd_panel_draw_bitmap(panel, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, s_fb);
+    ESP_LOGI(TAG, "ST7789 display initialized (framebuffer %u bytes in %s, backlight %d%%)",
+             (unsigned)fb_size, fb_in_psram ? "PSRAM" : "RAM", LCD_BACKLIGHT_DUTY_PCT);
     return ESP_OK;
 }
 
 void display_update(const char* title, const char* const* lines, int line_count) {
-    if (!panel) return;
+    if (!panel || !s_fb) return;
+
+    /* 1) 全部在内存里绘制 */
     fill_rect(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, COLOR_BG);
     draw_text(8, 8, title, 3, COLOR_TITLE);
     fill_rect(0, 40, DISPLAY_WIDTH, 2, COLOR_TITLE);
@@ -147,4 +184,7 @@ void display_update(const char* title, const char* const* lines, int line_count)
         draw_text(8, y, lines[i], 2, (i == 0) ? COLOR_HL : COLOR_FG);
         y += 22;
     }
+
+    /* 2) 一次 SPI 事务刷整帧，杜绝撕裂/闪烁 */
+    esp_lcd_panel_draw_bitmap(panel, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, s_fb);
 }
