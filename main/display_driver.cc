@@ -219,3 +219,9 @@ void display_update(const char* title, const char* const* lines, int line_count)
     /* 2) 一次 SPI 事务刷整帧，杜绝撕裂/闪烁 */
     esp_lcd_panel_draw_bitmap(panel, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, s_fb);
 }
+
+void display_show_image(const uint16_t* rgb565) {
+    if (!panel || !s_fb || !rgb565) return;
+    memcpy(s_fb, rgb565, (size_t)DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t));
+    esp_lcd_panel_draw_bitmap(panel, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, s_fb);
+}

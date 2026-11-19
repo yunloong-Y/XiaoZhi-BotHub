@@ -3,8 +3,9 @@
  *
  * 交互（BOOT 按键 GPIO0）：
  *   单击       -> 拍照（JPEG 存 /storage/photo_XXX.jpg）
- *   长按(>1.2s)-> 开始/停止录音（WAV 存 /storage/rec_XXX.wav）
- *   双击       -> 回放下一段录音
+ *   双击       -> 预览照片（每次切下一张，JPEG 解码显示在屏幕上）
+ *   三击       -> 回放下一段录音（WAV）
+ *   长按(>1.2s)-> 开始/停止录音
  *
  * 也可通过 USB 串口输入命令：photo / rec / play / ls / status / vol
  */
@@ -13,7 +14,9 @@
 
 #include <esp_log.h>
 #include <esp_err.h>
+#include <esp_heap_caps.h>
 #include <nvs_flash.h>
+#include <img_converters.h>
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -146,6 +149,87 @@ static void record_task(void*) {
     vTaskDelete(nullptr);
 }
 
+/* ---------- 照片预览任务 ---------- */
+static void photo_preview_task(void*) {
+    if (g_busy) { set_message("忙..."); vTaskDelete(nullptr); return; }
+
+    char files[32][64];
+    int count = storage_list("/storage", ".jpg", files, 32);
+    if (count == 0) {
+        set_message("没有照片");
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    g_busy = true;
+    set_mode(MODE_PLAYBACK);
+    LOCK_STATE(); g_state.previewing = true; UNLOCK_STATE();
+
+    /* 解码缓冲常驻 PSRAM，切换照片时复用 */
+    uint16_t* rgb = (uint16_t*)heap_caps_malloc(
+        (size_t)DISPLAY_WIDTH * DISPLAY_HEIGHT * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rgb) {
+        set_message("内存不足");
+        LOCK_STATE(); g_state.previewing = false; UNLOCK_STATE();
+        g_busy = false; set_mode(MODE_IDLE); vTaskDelete(nullptr); return;
+    }
+
+    int shown_idx = -1;          /* 当前已显示的序号，避免重复解码 */
+    uint32_t last_change = xTaskGetTickCount();
+
+    while (true) {
+        LOCK_STATE();
+        bool previewing = g_state.previewing;
+        int req = g_state.preview_index;
+        UNLOCK_STATE();
+
+        if (!previewing) break;  /* 单击退出 */
+
+        int idx = ((req % count) + count) % count;
+        if (idx != shown_idx) {
+            shown_idx = idx;
+            uint8_t* jpg = nullptr;
+            int jpg_len = storage_read(files[idx], &jpg);
+            bool ok = false;
+            if (jpg_len > 0 && jpg) {
+                ok = jpg2rgb565(jpg, (size_t)jpg_len, (uint8_t*)rgb, JPEG_IMAGE_SCALE_0);
+                free(jpg);
+            }
+            ESP_LOGI(TAG, "preview: %s len=%d decode=%s", files[idx], jpg_len, ok ? "OK" : "FAIL");
+            if (ok) {
+                const char* slash = strrchr(files[idx], '/');
+                const char* base = slash ? slash + 1 : files[idx];
+                char msg[96];
+                snprintf(msg, sizeof(msg), "看图 %s (%d/%d)", base, idx + 1, count);
+                LOCK_STATE();
+                strncpy(g_state.last_message, msg, sizeof(g_state.last_message) - 1);
+                g_state.last_message[sizeof(g_state.last_message) - 1] = '\0';
+                UNLOCK_STATE();
+                display_show_image(rgb);
+            } else {
+                LOCK_STATE();
+                snprintf(g_state.last_message, sizeof(g_state.last_message), "解码失败 %s", files[idx]);
+                UNLOCK_STATE();
+            }
+            last_change = xTaskGetTickCount();
+        }
+
+        /* 8 秒无操作自动回到状态栏 */
+        if ((xTaskGetTickCount() - last_change) > pdMS_TO_TICKS(8000)) {
+            LOCK_STATE(); g_state.previewing = false; UNLOCK_STATE();
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    heap_caps_free(rgb);
+    LOCK_STATE(); g_state.previewing = false; UNLOCK_STATE();
+    set_message("返回");
+    g_busy = false;
+    set_mode(MODE_IDLE);
+    vTaskDelete(nullptr);
+}
+
 /* ---------- 回放任务 ---------- */
 static void playback_task(void*) {
     if (g_busy) { set_message("忙..."); vTaskDelete(nullptr); return; }
@@ -211,6 +295,15 @@ static void playback_task(void*) {
 /* ---------- 显示刷新任务 ---------- */
 static void display_task(void*) {
     while (true) {
+        LOCK_STATE();
+        bool previewing = g_state.previewing;
+        UNLOCK_STATE();
+        if (previewing) {
+            /* 照片预览期间让路，避免状态栏覆盖图像 */
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
         char line0[96], line1[96], line2[96], line3[96];
         int photos, recs;
         char msg[96];
@@ -222,9 +315,8 @@ static void display_task(void*) {
 
         snprintf(line0, sizeof(line0), "%s", msg);
         snprintf(line1, sizeof(line1), "照片:%d  录音:%d", photos, recs);
-        snprintf(line2, sizeof(line2), "单击:拍照  长按:录音");
-        snprintf(line3, sizeof(line3), "双击:回放  已用:%uK",
-                 (unsigned)(storage_used_bytes() / 1024));
+        snprintf(line2, sizeof(line2), "单击:拍照 双击:看图");
+        snprintf(line3, sizeof(line3), "长按:录音 三击:播放");
 
         const char* lines[4] = {line0, line1, line2, line3};
         display_update("小智AI-BotHub", lines, 4);
@@ -240,6 +332,7 @@ static void button_task(void*) {
     bool long_fired = false;
     uint32_t press_start = 0;
     uint32_t last_click_end = 0;
+    int click_count = 0;   /* 连续短按次数：1=单击 2=双击 3=三击 */
 
     while (true) {
         bool level = gpio_get_level(BOOT_BUTTON_GPIO);
@@ -256,16 +349,12 @@ static void button_task(void*) {
                     // 松开
                     uint32_t dur = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS) - press_start;
                     if (long_fired) {
-                        // 长按已在按下期间处理
+                        // 长按已在按下期间处理，不计入点击
                     } else if (dur < 600) {
-                        // 判断双击
-                        if (now - last_click_end < 350) {
-                            xTaskCreate(playback_task, "playback", 6144, nullptr, 3, nullptr);
-                            last_click_end = 0;
-                        } else {
-                            last_click_end = now;
-                            // 单击拍照延迟触发，等待可能的双击
-                        }
+                        // 累计短按次数，静默期后统一判定单击/双击/三击
+                        if (now - last_click_end >= 350) click_count = 0;
+                        click_count++;
+                        last_click_end = now;
                     }
                 }
                 last = level;
@@ -287,10 +376,30 @@ static void button_task(void*) {
                 }
             }
         }
-        // 单击确认（距上次按下松开 > 350ms，判定为单击）
-        if (last_click_end > 0 && last && (now - last_click_end) > 350) {
-            xTaskCreate(photo_task, "photo", 6144, nullptr, 3, nullptr);
-            last_click_end = 0;
+        // 静默 350ms 后统一判定单击/双击/三击
+        if (click_count > 0 && last && (now - last_click_end) > 350) {
+            int clicks = click_count;
+            click_count = 0;
+            LOCK_STATE();
+            bool previewing = g_state.previewing;
+            UNLOCK_STATE();
+            if (previewing) {
+                /* 预览中：单击退出，双击/三击切下一张 */
+                if (clicks == 1) {
+                    LOCK_STATE(); g_state.previewing = false; UNLOCK_STATE();
+                    set_message("返回");
+                } else {
+                    LOCK_STATE();
+                    g_state.preview_index++;
+                    UNLOCK_STATE();
+                }
+            } else if (clicks == 1) {
+                xTaskCreate(photo_task, "photo", 6144, nullptr, 3, nullptr);
+            } else if (clicks == 2) {
+                xTaskCreate(photo_preview_task, "preview", 8192, nullptr, 3, nullptr);
+            } else {
+                xTaskCreate(playback_task, "playback", 6144, nullptr, 3, nullptr);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
@@ -300,7 +409,7 @@ static void button_task(void*) {
 static void cli_task(void*) {
     char line[64];
     int idx = 0;
-    ESP_LOGI(TAG, "CLI ready: photo | rec | play | ls | status | vol<pct>");
+    ESP_LOGI(TAG, "CLI ready: photo | preview | rec | play | ls | status | vol<pct>");
     while (true) {
         int c = getchar();
         if (c < 0) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
@@ -314,6 +423,8 @@ static void cli_task(void*) {
                     else xTaskCreate(record_task, "record", 6144, nullptr, 3, nullptr);
                 } else if (strcmp(line, "play") == 0) {
                     xTaskCreate(playback_task, "playback", 6144, nullptr, 3, nullptr);
+                } else if (strcmp(line, "preview") == 0) {
+                    xTaskCreate(photo_preview_task, "preview", 8192, nullptr, 3, nullptr);
                 } else if (strcmp(line, "ls") == 0) {
                     char files[32][64];
                     int n = storage_list("/storage", ".wav", files, 32);
@@ -376,5 +487,5 @@ extern "C" void app_main(void) {
     xTaskCreate(button_task, "button", 4096, nullptr, 3, nullptr);
     xTaskCreate(cli_task, "cli", 4096, nullptr, 2, nullptr);
 
-    ESP_LOGI(TAG, "Ready. BOOT: tap=photo, hold=record, double=play");
+    ESP_LOGI(TAG, "Ready. BOOT: tap=photo, double=preview, triple=play, hold=record");
 }

@@ -22,6 +22,8 @@ struct AppState {
     int photo_count = 0;      /* 已拍照片数 */
     int record_count = 0;     /* 已录音数 */
     int playback_index = 0;   /* 当前回放文件序号 */
+    int preview_index = 0;    /* 当前照片预览序号 */
+    bool previewing = false;  /* 照片预览中（暂停状态栏刷新） */
     char last_message[96] = "";
 };
 
@@ -86,3 +88,5 @@ bool wav_parse_header(const uint8_t* data, size_t len, WavHeader* out,
 esp_err_t display_init(void);
 /** 刷新屏幕：标题 + 若干行状态文本（最多 8 行） */
 void display_update(const char* title, const char* const* lines, int line_count);
+/** 全屏显示一张 RGB565 图像（尺寸须为 DISPLAY_WIDTH x DISPLAY_HEIGHT） */
+void display_show_image(const uint16_t* rgb565);
