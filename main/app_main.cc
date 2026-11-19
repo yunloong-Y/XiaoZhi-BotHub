@@ -193,22 +193,54 @@ static void photo_preview_task(void*) {
             uint8_t* jpg = nullptr;
             int jpg_len = storage_read(files[idx], &jpg);
             bool ok = false;
+            int img_w = 0, img_h = 0;
             if (jpg_len > 0 && jpg) {
-                /* 自动按图片高度选缩放：VGA(640x480) 用 1/2 缩放输出 320x240 满屏，
-                 * QVGA(320x240) 及以下 1:1 直接满屏。从 SOF0(FFC0) 读高度。 */
+                /* 从 SOF0(FFC0) 读原图宽高，按高度选解码缩放档 */
                 esp_jpeg_image_scale_t scale = JPEG_IMAGE_SCALE_0;
                 const uint8_t* p = jpg;
                 const uint8_t* pe = jpg + (jpg_len > 4096 ? 4096 : jpg_len);
                 while (p + 9 < pe) {
                     if (p[0] == 0xFF && p[1] == 0xC0) {
-                        int h = (p[5] << 8) | p[6];
-                        if (h > 240) scale = JPEG_IMAGE_SCALE_1_2;
+                        img_h = (p[5] << 8) | p[6];
+                        img_w = (p[7] << 8) | p[8];
                         break;
                     }
                     p++;
                 }
+                if (img_h > 480) scale = JPEG_IMAGE_SCALE_1_4;
+                else if (img_h > 240) scale = JPEG_IMAGE_SCALE_1_2;
                 ok = jpg2rgb565(jpg, (size_t)jpg_len, (uint8_t*)rgb, scale);
+                if (ok && scale != JPEG_IMAGE_SCALE_0) {
+                    img_w = (img_w + 1) / 2; img_h = (img_h + 1) / 2;
+                } else if (ok) {
+                    /* scale_0 时尺寸不变 */
+                }
                 free(jpg);
+            }
+            if (ok) {
+                /* 中心裁剪到屏幕 4:3（320x240）：兼容 HVGA(480x320)、VGA、QVGA 等 */
+                int dw = img_w > DISPLAY_WIDTH ? (img_w - DISPLAY_WIDTH) / 2 : 0;
+                int dh = img_h > DISPLAY_HEIGHT ? (img_h - DISPLAY_HEIGHT) / 2 : 0;
+                int cw = img_w - dw * 2 < DISPLAY_WIDTH ? img_w - dw * 2 : DISPLAY_WIDTH;
+                int ch = img_h - dh * 2 < DISPLAY_HEIGHT ? img_h - dh * 2 : DISPLAY_HEIGHT;
+                if (dw || dh || cw != img_w || ch != img_h) {
+                    static uint16_t* crop = nullptr;
+                    if (!crop) crop = (uint16_t*)heap_caps_malloc(
+                        (size_t)DISPLAY_WIDTH * DISPLAY_HEIGHT * 2,
+                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    if (crop) {
+                        for (int y = 0; y < ch; y++) {
+                            memcpy(crop + (size_t)y * DISPLAY_WIDTH,
+                                   rgb + (size_t)(y + dh) * img_w + dw,
+                                   (size_t)cw * 2);
+                        }
+                        display_show_image(crop);
+                    } else {
+                        display_show_image(rgb);
+                    }
+                } else {
+                    display_show_image(rgb);
+                }
             }
             ESP_LOGI(TAG, "preview: %s len=%d decode=%s", files[idx], jpg_len, ok ? "OK" : "FAIL");
             if (ok) {
@@ -523,6 +555,18 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(display_init());
     ESP_ERROR_CHECK(audio_init());
     ESP_ERROR_CHECK(camera_init());
+
+    /* 启动时扫描现有文件恢复计数，避免重启后 photo_000 重名覆盖旧照片 */
+    {
+        static char files[64][64];
+        int np = storage_list("/storage", ".jpg", files, 64);
+        int nw = storage_list("/storage", ".wav", files, 64);
+        LOCK_STATE();
+        g_state.photo_count = np;
+        g_state.record_count = nw;
+        UNLOCK_STATE();
+        ESP_LOGI(TAG, "restored counts: %d photos, %d recs", np, nw);
+    }
 
     gpio_config_t btn = {
         .pin_bit_mask = (1ULL << BOOT_BUTTON_GPIO),
