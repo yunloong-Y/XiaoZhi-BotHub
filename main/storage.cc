@@ -8,6 +8,7 @@
 #include <esp_log.h>
 #include <esp_spiffs.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <dirent.h>
 #include <cstdio>
 #include <cstring>
@@ -82,6 +83,15 @@ int storage_read(const char* path, uint8_t** out) {
 bool storage_exists(const char* path) {
     struct stat st;
     return stat(path, &st) == 0;
+}
+
+esp_err_t storage_remove(const char* path) {
+    if (unlink(path) == 0) {
+        ESP_LOGI(TAG, "removed %s", path);
+        return ESP_OK;
+    }
+    ESP_LOGE(TAG, "remove failed: %s", path);
+    return ESP_FAIL;
 }
 
 int storage_list(const char* dir, const char* ext, char out_names[][64], int max_count) {

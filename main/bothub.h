@@ -37,6 +37,7 @@ int storage_read(const char* path, uint8_t** out);
 /** 列出目录中匹配前缀与扩展名的文件，写入 out_names（每个为静态缓冲区内的字符串指针） */
 int storage_list(const char* dir, const char* ext, char out_names[][64], int max_count);
 bool storage_exists(const char* path);
+esp_err_t storage_remove(const char* path);
 size_t storage_used_bytes(void);
 size_t storage_total_bytes(void);
 

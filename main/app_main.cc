@@ -409,7 +409,7 @@ static void button_task(void*) {
 static void cli_task(void*) {
     char line[64];
     int idx = 0;
-    ESP_LOGI(TAG, "CLI ready: photo | preview | rec | play | ls | status | vol<pct>");
+    ESP_LOGI(TAG, "CLI ready: photo | preview | rec | play | ls | status | rmphotos | vol<pct>");
     while (true) {
         int c = getchar();
         if (c < 0) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
@@ -426,7 +426,7 @@ static void cli_task(void*) {
                 } else if (strcmp(line, "preview") == 0) {
                     xTaskCreate(photo_preview_task, "preview", 8192, nullptr, 3, nullptr);
                 } else if (strcmp(line, "ls") == 0) {
-                    char files[32][64];
+                    static char files[32][64];
                     int n = storage_list("/storage", ".wav", files, 32);
                     int n2 = storage_list("/storage", ".jpg", files + n, 32 - n);
                     ESP_LOGI(TAG, "files: %d wav, %d jpg", n, n2);
@@ -436,6 +436,19 @@ static void cli_task(void*) {
                              app_state().photo_count, app_state().record_count,
                              (unsigned)(storage_used_bytes()/1024),
                              (unsigned)(storage_total_bytes()/1024));
+                } else if (strcmp(line, "rmphotos") == 0) {
+                    /* 注意：CLI 任务栈仅 4096B，大数组放 static 避免栈溢出 */
+                    static char files[64][64];
+                    int n = storage_list("/storage", ".jpg", files, 64);
+                    int removed = 0;
+                    for (int i = 0; i < n; i++) {
+                        if (storage_remove(files[i]) == ESP_OK) removed++;
+                    }
+                    LOCK_STATE();
+                    g_state.photo_count = 0;
+                    g_state.preview_index = 0;
+                    UNLOCK_STATE();
+                    ESP_LOGI(TAG, "rmphotos: removed %d/%d jpg (wav kept)", removed, n);
                 } else if (strncmp(line, "vol", 3) == 0) {
                     int v = atoi(line + 3);
                     audio_set_volume(v);
