@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "app_main.cc"
+        "board_io.cc"
         "audio_driver.cc"
         "camera_driver.cc"
         "storage.cc"

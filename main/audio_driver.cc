@@ -8,6 +8,7 @@
  */
 #include "bothub.h"
 #include "board_config.h"
+#include "board_io.h"
 
 #include <esp_log.h>
 #include <esp_check.h>
@@ -28,8 +29,7 @@ static const char* TAG = "audio";
 #define DMA_DESC_NUM   6
 #define DMA_FRAME_NUM  240
 
-static i2c_master_bus_handle_t i2c_bus = nullptr;
-static i2c_master_dev_handle_t pca9557_dev = nullptr;
+static i2c_master_bus_handle_t i2c_bus = nullptr;  /* 复用 board_io 的总线 */
 
 static i2s_chan_handle_t tx_handle = nullptr;
 static i2s_chan_handle_t rx_handle = nullptr;
@@ -49,37 +49,16 @@ static bool input_open = false;
 static bool output_open = false;
 static int cur_volume = 70;
 
-/* ---------- PCA9557：控制功放 ---------- */
+/* ---------- PCA9557：控制功放（复用 board_io 的 I2C/PCA9557） ---------- */
 esp_err_t audio_set_pa(bool enable) {
-    if (!pca9557_dev) return ESP_ERR_INVALID_STATE;
-    uint8_t reg = 0;
-    esp_err_t ret = i2c_master_receive(pca9557_dev, &reg, 1, pdMS_TO_TICKS(100));
-    if (ret != ESP_OK) return ret;
-    if (enable) reg |= (1 << PCA9557_PA_BIT);
-    else        reg &= ~(1 << PCA9557_PA_BIT);
-    uint8_t tx[2] = {0x01, reg}; /* 输出端口寄存器 0x01 */
-    return i2c_master_transmit(pca9557_dev, tx, 2, pdMS_TO_TICKS(100));
+    return board_io_set_output(PCA9557_PA_BIT, enable ? 1 : 0);
 }
 
 static esp_err_t i2c_init(void) {
-    i2c_master_bus_config_t cfg = {
-        .i2c_port = AUDIO_CODEC_I2C_PORT,
-        .sda_io_num = AUDIO_CODEC_I2C_SDA,
-        .scl_io_num = AUDIO_CODEC_I2C_SCL,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags = { .enable_internal_pullup = true },
-    };
-    ESP_ERROR_CHECK(i2c_new_master_bus(&cfg, &i2c_bus));
-
-    i2c_device_config_t pca_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = PCA9557_I2C_ADDR,
-        .scl_speed_hz = 100000,
-    };
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &pca_cfg, &pca9557_dev));
-    // 默认关闭功放
-    audio_set_pa(false);
+    // I2C 总线与 PCA9557 由 board_io 统一初始化（display 先行调用）
+    ESP_ERROR_CHECK(board_io_init());
+    i2c_bus = (i2c_master_bus_handle_t)board_io_get_i2c_bus();
+    audio_set_pa(false);  // 默认关闭功放
     return ESP_OK;
 }
 

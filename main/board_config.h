@@ -29,7 +29,15 @@
 #define ES7210_I2C_ADDR          (0x82)  /* 8-bit 形式，高位为 R/W */
 
 #define PCA9557_I2C_ADDR         (0x19)
-#define PCA9557_PA_BIT           (1)     /* Bit1: 功放使能，高电平开启 */
+/* PCA9557 位定义（对照立创实战派原厂验证配置）：
+ *   Bit0 -> LCD 复位（低电平=放开复位/正常工作）
+ *   Bit1 -> 功放使能（高电平开启）
+ *   Bit2 -> 摄像头电源（低电平开启） */
+#define PCA9557_LCD_RST_BIT      (0)
+#define PCA9557_PA_BIT           (1)
+#define PCA9557_CAM_PWR_BIT      (2)
+#define PCA9557_OUTPUT_INIT      0x03    /* 上电默认输出值 */
+#define PCA9557_CONFIG_OUTPUT    0xf8    /* 0=输出 1=输入：Bit0~2 输出 */
 
 /* ---------- 按键 ---------- */
 #define BOOT_BUTTON_GPIO         GPIO_NUM_0
@@ -44,6 +52,9 @@
 #define LCD_PIN_CS               GPIO_NUM_NC  /* 常低，未接 CS */
 #define LCD_PIN_RST              GPIO_NUM_NC
 #define LCD_PIN_BACKLIGHT        GPIO_NUM_42
+#define LCD_BACKLIGHT_INVERT     true    /* 背光低电平点亮（原厂 OUTPUT_INVERT=true） */
+#define LCD_BACKLIGHT_FREQ_HZ    25000
+#define LCD_BACKLIGHT_DUTY_PCT   75
 #define DISPLAY_MIRROR_X         true
 #define DISPLAY_MIRROR_Y         false
 #define DISPLAY_SWAP_XY          true
