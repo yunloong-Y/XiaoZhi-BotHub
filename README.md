@@ -2,7 +2,7 @@
 
 ESP32-S3 上的**拍照 / 录音 / 回放**小工具。基于 ESP-IDF v6.1 原生组件从零构建，不依赖小智云端框架。所有照片与录音保存在板载 Flash 的 SPIFFS 分区，可离线使用。
 
-> GitHub 仓库名只支持 ASCII 字符，因此远端仓库名为 `xiaozhi-ai-bothub`；项目显示名为“小智AI-BotHub”。
+> GitHub 仓库名只支持 ASCII 字符，因此远端仓库名为 `XiaoZhi-BotHub`（URL 中显示为小写 `xiaozhi-bothub`）；项目显示名为“小智AI-BotHub”。
 
 ## 功能
 
@@ -49,6 +49,15 @@ idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
+### 图形界面烧录（本地 Web 工具）
+
+不想敲命令？双击 `tools/web_flasher/start.command`，浏览器会自动打开 `http://127.0.0.1:8765`，即可在网页里选择串口、勾选固件、改烧录地址、查看实时日志并一键烧录/擦除。
+
+- **无需联网、无需安装第三方库**（纯 Python 标准库 + 系统 ESP-IDF 的 esptool）；兼容 Chrome/Safari/Firefox 等所有浏览器。
+- 固件列表和烧录地址自动从 `build/flasher_args.json` 读取；也可手动指定任意 bin 与地址。
+- 支持 ESP32-S3/C3/C6/ESP32，波特率、Flash 模式/大小/频率均可在页面上调整。
+- 停止服务：在运行窗口按 `Ctrl+C`。
+
 ### 操作
 
 **BOOT 按键：**
@@ -88,6 +97,12 @@ vol70    设置音量（0-100）
 │   └── font5x7.h          显示用点阵字体
 ├── partitions/partitions_16mb.csv
 ├── sdkconfig.defaults
+├── tools/web_flasher/       本地 Web 烧录工具
+│   ├── start.command        双击启动
+│   ├── server.py            后端服务（标准库）
+│   ├── index.html           页面
+│   ├── app.js / style.css   前端逻辑与样式
+│   └── README.md            工具说明
 └── README.md
 ```
 

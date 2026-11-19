@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小智AI-BotHub · 固件烧录工具</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="chip">ESP32-S3</span>
+      <div>
+        <h1>小智AI-BotHub <span class="sub">固件烧录工具</span></h1>
+        <p class="tagline">本地 Web 烧录 · 无需联网 · 兼容所有浏览器</p>
+      </div>
+    </div>
+    <div class="conn" id="connBadge"><span class="dot"></span> 服务连接中…</div>
+  </header>
+
+  <div class="grid">
+    <!-- 左：配置 -->
+    <section class="panel">
+      <h2>① 连接设置</h2>
+      <div class="field">
+        <label>串口设备</label>
+        <div class="row">
+          <select id="port"></select>
+          <button class="btn ghost" id="refreshPorts" title="重新扫描串口">↻</button>
+        </div>
+        <small id="portHint">扫描中…</small>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>芯片型号</label>
+          <select id="chip">
+            <option value="esp32s3" selected>ESP32-S3</option>
+            <option value="esp32">ESP32</option>
+            <option value="esp32c3">ESP32-C3</option>
+            <option value="esp32c6">ESP32-C6</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>波特率</label>
+          <select id="baud">
+            <option value="921600">921600</option>
+            <option value="460800" selected>460800</option>
+            <option value="230400">230400</option>
+            <option value="115200">115200</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Flash 模式</label><select id="flash_mode"><option>dio</option><option>qio</option><option>opio</option></select></div>
+        <div class="field"><label>Flash 大小</label><select id="flash_size"><option>16MB</option><option>8MB</option><option>4MB</option><option>2MB</option><option>1MB</option></select></div>
+        <div class="field"><label>Flash 频率</label><select id="flash_freq"><option>80m</option><option>40m</option><option>20m</option></select></div>
+      </div>
+      <p class="note" id="esptoolPath">esptool: 检测中…</p>
+
+      <h2>② 固件文件 <small>（来自 build/）</small></h2>
+      <div class="filelist" id="filelist"><div class="empty">加载中…</div></div>
+      <p class="note">默认地址已从 <code>flasher_args.json</code> 自动读取，如烧录其它固件可手动修改地址。</p>
+
+      <div class="actions">
+        <button class="btn primary" id="flashBtn">▶ 开始烧录</button>
+        <button class="btn danger" id="eraseBtn">擦除 Flash</button>
+        <button class="btn ghost" id="stopBtn" disabled>■ 停止</button>
+      </div>
+    </section>
+
+    <!-- 右：日志 -->
+    <section class="panel console-panel">
+      <div class="console-head">
+        <h2>③ 烧录日志</h2>
+        <button class="btn ghost small" id="clearLog">清空</button>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress"><div class="bar" id="progressBar"></div></div>
+        <span id="progressText" class="progress-text">就绪</span>
+      </div>
+      <div class="console" id="console"><div class="line dim">等待操作…</div></div>
+      <div class="tips">
+        <strong>提示</strong>
+        <ul>
+          <li>首次使用请双击运行 <code>start.command</code> 启动本工具。</li>
+          <li>烧录时板子需通过 USB 连接电脑，端口会自动识别。</li>
+          <li>若端口未出现，检查数据线或安装 USB 转串口驱动。</li>
+        </ul>
+      </div>
+    </section>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
