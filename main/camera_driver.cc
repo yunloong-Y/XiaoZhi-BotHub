@@ -45,7 +45,7 @@ esp_err_t camera_init(void) {
     config.xclk_freq_hz = CAMERA_XCLK_FREQ_HZ;
     config.pixel_format = PIXFORMAT_RGB565;  /* GC0308 无硬件 JPEG，采集后软件编码 */
     config.frame_size = FRAMESIZE_QVGA;   /* 320x240 */
-    config.jpeg_quality = 12;             /* 数值越小质量越高 */
+    config.jpeg_quality = 90;             /* 传感器硬件 JPEG 用（本板 RGB565 输出，实际由 frame2jpg 控制） */
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
@@ -84,8 +84,9 @@ esp_err_t camera_take_jpeg(uint8_t** buf, size_t* len) {
         jpeg = (uint8_t*)malloc(jpeg_len);
         if (jpeg) memcpy(jpeg, fb->buf, jpeg_len);
     } else {
-        /* GC0308: RGB565 -> 软件编码 JPEG（质量 12，越高质量越好） */
-        bool ok = frame2jpg(fb, 12, &jpeg, &jpeg_len);
+        /* GC0308: RGB565 -> 软件编码 JPEG。jpge 编码器 quality 1-100，越大越清晰。
+         * 之前误用 12（受传感器 JPEG 语义误导）导致照片糊成马赛克，改为 90。 */
+        bool ok = frame2jpg(fb, 90, &jpeg, &jpeg_len);
         if (!ok) {
             ESP_LOGE(TAG, "frame2jpg failed");
             ret = ESP_FAIL;
